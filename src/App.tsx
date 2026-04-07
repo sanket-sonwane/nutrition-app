@@ -1,14 +1,28 @@
 import FoodInput from './components/FoodInput';
-import HealthCard from './components/HealthCard';
+import HealthScoreCard from './components/HealthScoreCard';
 import Heatmap from './components/Heatmap';
 import SuggestionCard from './components/SuggestionCard';
+import LogList from './components/LogList';
 import { useHealthData } from './hooks/useHealthData';
-import { formatDateForDisplay } from './utils/helpers';
 
 /**
- * Root application component for NutriTrack.
- * Composes all feature components and orchestrates the layout.
+ * App — Root Component
+ *
+ * LAYOUT DESIGN (top to bottom):
+ * 1. HERO: Large health score (visually dominant, anchors attention)
+ * 2. MIDDLE: Food input + outside food toggle (action area)
+ * 3. BELOW: One smart suggestion (behavioral nudge)
+ * 4. LOG: Today's food entries
+ * 5. BOTTOM: Full-width heatmap — "Your Habit Journey"
+ *
+ * UI PHILOSOPHY:
+ * The layout is designed for decision-making clarity.
+ * Every section has a single purpose, and the visual hierarchy
+ * guides the user's eyes from "current state" (score) →
+ * "action" (input) → "guidance" (suggestion) → "progress" (heatmap).
+ *
  * All business logic is delegated to the useHealthData hook.
+ * This component is purely presentational + compositional.
  */
 export default function App() {
   const {
@@ -23,93 +37,62 @@ export default function App() {
     clearToday,
   } = useHealthData();
 
+  /** Format today's date for display */
+  const displayDate = new Date(todayDate + 'T00:00:00').toLocaleDateString('en-US', {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+  });
+
   return (
-    <div className="app-container">
-      {/* Header */}
+    <div className="app-shell">
+      {/* ─── Header ──────────────────────────────────────────────── */}
       <header className="app-header" role="banner">
-        <div className="header-content">
-          <div className="header-brand">
-            <span className="header-icon" aria-hidden="true">🥗</span>
-            <h1 className="header-title">NutriTrack</h1>
+        <div className="header-inner">
+          <div className="brand">
+            <span className="brand-icon" aria-hidden="true">🥗</span>
+            <h1 className="brand-name">NutriTrack</h1>
           </div>
-          <p className="header-subtitle">
-            Behavior-Driven Nutrition · {formatDateForDisplay(todayDate)}
-          </p>
+          <p className="header-date">{displayDate}</p>
         </div>
       </header>
 
       <main className="app-main" role="main">
-        {/* Food Input Section */}
-        <section className="section food-input-section" aria-label="Log food">
-          <h2 className="section-title">Log Your Food</h2>
-          <p className="section-description">
-            Type a food with quantity (e.g., "2 sandwich" or "apple") to track your intake.
-          </p>
+        {/* ─── 1. HERO: Health Score ─────────────────────────────── */}
+        <section className="hero-section" aria-label="Health score">
+          <HealthScoreCard score={todayScore} nutrition={todayNutrition} />
+        </section>
+
+        {/* ─── 2. MIDDLE: Food Input ─────────────────────────────── */}
+        <section className="input-section" aria-label="Log food">
+          <h2 className="section-heading">Log Your Meal</h2>
           <FoodInput onAddFood={addFoodEntry} />
         </section>
 
-        {/* Two-column layout: Score + Suggestion */}
-        <div className="dashboard-grid">
-          {/* Health Score & Nutrition */}
-          <section className="section" aria-label="Health score and nutrition">
-            <h2 className="section-title">Health Score</h2>
-            <HealthCard
-              score={todayScore}
-              nutrition={todayNutrition}
-              entries={todayEntries}
-              onClearToday={clearToday}
-            />
-          </section>
+        {/* ─── 3. BELOW: Smart Suggestion ────────────────────────── */}
+        <section className="suggestion-section" aria-label="Nutrition insight">
+          <SuggestionCard suggestion={suggestion} />
+        </section>
 
-          {/* Suggestion + Food Log */}
-          <div className="sidebar-stack">
-            <section className="section" aria-label="Nutrition suggestion">
-              <h2 className="section-title">Smart Insight</h2>
-              <SuggestionCard suggestion={suggestion} />
-            </section>
+        {/* ─── 4. LOG: Today's Entries ────────────────────────────── */}
+        <section className="log-section" aria-label="Today's food log">
+          <LogList
+            entries={todayEntries}
+            onRemoveEntry={removeFoodEntry}
+            onClearAll={clearToday}
+          />
+        </section>
 
-            {/* Today's Food Log */}
-            {todayEntries.length > 0 && (
-              <section className="section food-log-section" aria-label="Today's food log">
-                <h2 className="section-title">
-                  Today's Log
-                  <span className="entry-count-badge">{todayEntries.length}</span>
-                </h2>
-                <ul className="food-log-list" role="list">
-                  {todayEntries.map((entry) => (
-                    <li key={entry.id} className="food-log-item">
-                      <div className="food-log-info">
-                        <span className="food-log-name">
-                          {entry.quantity}× {entry.foodItem.name}
-                        </span>
-                        <span className="food-log-calories">
-                          {Math.round(entry.foodItem.calories * entry.quantity)} kcal
-                        </span>
-                      </div>
-                      <button
-                        className="food-log-remove"
-                        onClick={() => removeFoodEntry(entry.id)}
-                        aria-label={`Remove ${entry.foodItem.name}`}
-                      >
-                        ×
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            )}
-          </div>
-        </div>
-
-        {/* Heatmap Section */}
-        <section className="section heatmap-section" aria-label="Health heatmap">
+        {/* ─── 5. BOTTOM: Heatmap ────────────────────────────────── */}
+        <section className="heatmap-section" aria-label="Habit journey heatmap">
           <Heatmap data={heatmapData} />
         </section>
       </main>
 
-      {/* Footer */}
+      {/* ─── Footer ──────────────────────────────────────────────── */}
       <footer className="app-footer" role="contentinfo">
-        <p>NutriTrack — Built with ❤️ for healthier choices</p>
+        <p>NutriTrack — Building healthier habits, one meal at a time</p>
       </footer>
     </div>
   );

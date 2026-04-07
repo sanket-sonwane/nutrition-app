@@ -1,13 +1,15 @@
 /**
  * Core type definitions for the NutriTrack application.
- * All domain entities are defined here for strict type safety across the app.
+ *
+ * All domain entities are strictly typed here to ensure
+ * type safety across all layers: UI, services, and data.
  */
 
 /** Represents a single food item in the database */
 export interface FoodItem {
-  /** Unique identifier / name of the food (lowercase, singular) */
+  /** Unique lowercase identifier used for lookup (e.g., "sandwich") */
   id: string;
-  /** Display name */
+  /** Human-readable display name (e.g., "Sandwich") */
   name: string;
   /** Calories per single serving */
   calories: number;
@@ -17,11 +19,11 @@ export interface FoodItem {
   carbs: number;
   /** Fats in grams per serving */
   fats: number;
-  /** Category for grouping and scoring */
+  /** Category for scoring and grouping */
   category: FoodCategory;
 }
 
-/** Food categories used for scoring and suggestions */
+/** Food categories used for scoring penalties and suggestions */
 export type FoodCategory =
   | 'grain'
   | 'protein'
@@ -46,15 +48,17 @@ export interface ParsedFoodInput {
   itemName: string;
 }
 
-/** A single food log entry */
+/** A single food log entry with metadata */
 export interface FoodLogEntry {
   id: string;
   foodItem: FoodItem;
   quantity: number;
+  /** Whether this was marked as outside food by the user */
+  isOutsideFood: boolean;
   timestamp: number;
 }
 
-/** Daily log containing all food entries for a single day */
+/** Daily log containing all entries and computed data for one day */
 export interface DailyLog {
   /** Date string in YYYY-MM-DD format */
   date: string;
@@ -63,10 +67,19 @@ export interface DailyLog {
   score: HealthScore;
 }
 
-/** Health score with an explanation of how it was computed */
+/**
+ * Health score with explanation.
+ *
+ * DESIGN NOTE: Score starts at 100 and penalties are deducted.
+ * This is a deliberate psychological choice — starting high
+ * encourages users to maintain good habits rather than
+ * feeling they need to "earn" points from zero.
+ */
 export interface HealthScore {
   /** Numeric score from 0 to 100 */
   value: number;
+  /** Previous score before last entry (for showing change) */
+  previousValue: number | null;
   /** Human-readable explanation of the score */
   explanation: string;
   /** Letter grade derived from score */
@@ -81,8 +94,8 @@ export interface Suggestion {
   type: SuggestionType;
   /** User-facing message */
   message: string;
-  /** Priority level for UI ordering */
-  priority: 'high' | 'medium' | 'low';
+  /** Emoji icon for visual clarity */
+  icon: string;
 }
 
 export type SuggestionType =
@@ -99,11 +112,9 @@ export type SuggestionType =
 export interface HeatmapDay {
   date: string;
   score: number;
-  grade: ScoreGrade;
 }
 
-/** Storage keys for localStorage abstraction */
+/** Keys for localStorage abstraction — avoids magic strings */
 export enum StorageKey {
   DAILY_LOGS = 'nutritrack_daily_logs',
-  HEATMAP_DATA = 'nutritrack_heatmap_data',
 }

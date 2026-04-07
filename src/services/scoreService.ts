@@ -1,330 +1,197 @@
-import type {
-  HealthScore,
-  NutritionData,
-  FoodLogEntry,
-  ScoreGrade,
-  Suggestion,
-  SuggestionType,
-} from '../types';
+import type { HealthScore, NutritionData, FoodLogEntry, ScoreGrade } from '../types';
 
 /**
- * Score service contains pure functions for computing the health score
- * and generating actionable suggestions based on nutritional data.
+ * HEALTH SCORE SERVICE
+ *
+ * ┌─────────────────────────────────────────────────────────────────────┐
+ * │  PSYCHOLOGICAL DESIGN CHOICE: Starting from 100                    │
+ * │                                                                     │
+ * │  The score begins at 100 and penalties are DEDUCTED.                │
+ * │  This is NOT arbitrary — it's rooted in behavioral psychology:      │
+ * │                                                                     │
+ * │  1. Loss Aversion: Humans feel losses ~2x more than gains.          │
+ * │     Starting high makes users want to PROTECT their score.          │
+ * │                                                                     │
+ * │  2. Positive Reinforcement: A high starting score tells the user    │
+ * │     "you're doing well by default" rather than "prove yourself."    │
+ * │                                                                     │
+ * │  3. Immediate Feedback: Seeing 100 → 85 after a burger is more     │
+ * │     impactful than seeing 0 → 15 after eating salad.                │
+ * │                                                                     │
+ * │  This approach encourages sustained healthy behavior through        │
+ * │  protection motivation rather than achievement motivation.          │
+ * └─────────────────────────────────────────────────────────────────────┘
  */
 
-// ─── Constants ───────────────────────────────────────────────────────────────
+// ─── Penalty Constants (avoid magic numbers) ────────────────────────────────
 
-/** Recommended daily intake targets */
+/** Maximum score (starting point) */
+const MAX_SCORE = 100;
+
+/** Daily recommended values for penalty calculations */
 const DAILY_TARGETS = {
   calories: 2000,
-  protein: 50,  // grams
-  carbs: 250,   // grams
-  fats: 65,     // grams
+  protein: 50,      // grams
+  carbs: 250,        // grams
+  fats: 65,          // grams
 } as const;
-
-/** Ideal macro ratio (percentage of calories) */
-const IDEAL_MACRO_RATIO = {
-  protein: 0.20, // 20% of calories from protein
-  carbs: 0.50,   // 50% from carbs
-  fats: 0.30,    // 30% from fats
-} as const;
-
-/** Score component weights (must sum to 1.0) */
-const SCORE_WEIGHTS = {
-  macroBalance: 0.40,
-  calorieAdherence: 0.35,
-  outsideFoodPenalty: 0.25,
-} as const;
-
-/** Calorie-per-gram multipliers for macros */
-const CALORIES_PER_GRAM = {
-  protein: 4,
-  carbs: 4,
-  fats: 9,
-} as const;
-
-/** Maximum penalty for outside food (percentage of entries) */
-const OUTSIDE_FOOD_THRESHOLD = 0.5;
-
-// ─── Score Calculation ───────────────────────────────────────────────────────
 
 /**
- * Calculate the overall health score (0–100) based on the day's nutrition.
+ * Penalty weights for each scoring factor.
+ * Higher weight = more impact on the final score.
+ */
+const PENALTIES = {
+  /** Penalty per 100 excess calories over target */
+  EXCESS_CALORIES_PER_100: 5,
+  /** Max penalty for calorie excess */
+  EXCESS_CALORIES_MAX: 25,
+
+  /** Penalty when protein is below 60% of target */
+  LOW_PROTEIN: 15,
+  /** Penalty when protein is below 30% of target */
+  VERY_LOW_PROTEIN: 25,
+
+  /** Penalty when carb ratio exceeds 60% of total calories */
+  HIGH_CARB_RATIO: 12,
+  /** Penalty when carb ratio exceeds 70% */
+  VERY_HIGH_CARB_RATIO: 20,
+
+  /** Penalty when fat ratio exceeds 40% of total calories */
+  HIGH_FAT_RATIO: 10,
+  /** Penalty when fat ratio exceeds 50% */
+  VERY_HIGH_FAT_RATIO: 18,
+
+  /** Penalty per outside food entry */
+  OUTSIDE_FOOD_PER_ITEM: 8,
+  /** Max penalty for outside food */
+  OUTSIDE_FOOD_MAX: 30,
+} as const;
+
+/** Calorie-per-gram multipliers */
+const CALS_PER_GRAM = { protein: 4, carbs: 4, fats: 9 } as const;
+
+// ─── Main Score Calculation ──────────────────────────────────────────────────
+
+/**
+ * Calculate health score using the deduction model.
  *
- * The score is composed of three weighted factors:
- * 1. Macro balance (40%): How close macro ratios are to the ideal
- * 2. Calorie adherence (35%): How close total calories are to target
- * 3. Outside food penalty (25%): Penalty for high proportion of outside food
+ * Starts at 100 and applies penalties for:
+ * 1. Excess calorie intake
+ * 2. Low protein consumption
+ * 3. High carbohydrate ratio
+ * 4. High fat ratio
+ * 5. Outside food entries
  *
  * @param nutrition - Aggregated daily nutrition data
- * @param entries - Individual food log entries (used for outside food detection)
- * @returns HealthScore with value, explanation, and letter grade
+ * @param entries - Individual food log entries
+ * @param previousScore - The score before the latest entry (for delta display)
+ * @returns HealthScore with value, explanation, and grade
  */
 export function calculateHealthScore(
   nutrition: NutritionData,
-  entries: FoodLogEntry[]
+  entries: FoodLogEntry[],
+  previousScore: number | null = null
 ): HealthScore {
-  // Handle edge case: no food logged
+  // No food logged yet — perfect score, encourage the user
   if (entries.length === 0) {
     return {
-      value: 0,
-      explanation: 'No food logged yet. Start tracking to see your score!',
-      grade: 'F',
+      value: MAX_SCORE,
+      previousValue: null,
+      explanation: 'Start logging your meals to see your score!',
+      grade: 'A',
     };
   }
 
-  const macroScore = calculateMacroBalanceScore(nutrition);
-  const calorieScore = calculateCalorieAdherenceScore(nutrition.totalCalories);
-  const outsidePenalty = calculateOutsideFoodPenalty(entries);
+  let score = MAX_SCORE;
+  const reasons: string[] = [];
 
-  const rawScore =
-    macroScore * SCORE_WEIGHTS.macroBalance +
-    calorieScore * SCORE_WEIGHTS.calorieAdherence +
-    outsidePenalty * SCORE_WEIGHTS.outsideFoodPenalty;
+  // 1. Excess calorie penalty
+  const calorieExcess = nutrition.totalCalories - DAILY_TARGETS.calories;
+  if (calorieExcess > 0) {
+    const penalty = Math.min(
+      Math.floor(calorieExcess / 100) * PENALTIES.EXCESS_CALORIES_PER_100,
+      PENALTIES.EXCESS_CALORIES_MAX
+    );
+    score -= penalty;
+    reasons.push('Calorie intake is above target');
+  }
 
-  const value = Math.round(Math.max(0, Math.min(100, rawScore)));
-  const grade = scoreToGrade(value);
-  const explanation = buildExplanation(macroScore, calorieScore, outsidePenalty, nutrition);
+  // 2. Low protein penalty
+  const proteinRatio = nutrition.totalProtein / DAILY_TARGETS.protein;
+  if (proteinRatio < 0.3) {
+    score -= PENALTIES.VERY_LOW_PROTEIN;
+    reasons.push('Protein intake is very low');
+  } else if (proteinRatio < 0.6) {
+    score -= PENALTIES.LOW_PROTEIN;
+    reasons.push('Protein intake is low');
+  }
 
-  return { value, explanation, grade };
-}
+  // 3. High carb ratio penalty
+  if (nutrition.totalCalories > 0) {
+    const carbCalRatio =
+      (nutrition.totalCarbs * CALS_PER_GRAM.carbs) / nutrition.totalCalories;
+    if (carbCalRatio > 0.7) {
+      score -= PENALTIES.VERY_HIGH_CARB_RATIO;
+      reasons.push('Carb ratio is very high');
+    } else if (carbCalRatio > 0.6) {
+      score -= PENALTIES.HIGH_CARB_RATIO;
+      reasons.push('Carb ratio is high');
+    }
+  }
 
-/**
- * Score macro balance by how close actual ratios are to ideal.
- * Returns 0–100.
- */
-function calculateMacroBalanceScore(nutrition: NutritionData): number {
-  const { totalProtein, totalCarbs, totalFats, totalCalories } = nutrition;
+  // 4. High fat ratio penalty
+  if (nutrition.totalCalories > 0) {
+    const fatCalRatio =
+      (nutrition.totalFats * CALS_PER_GRAM.fats) / nutrition.totalCalories;
+    if (fatCalRatio > 0.5) {
+      score -= PENALTIES.VERY_HIGH_FAT_RATIO;
+      reasons.push('Fat ratio is very high');
+    } else if (fatCalRatio > 0.4) {
+      score -= PENALTIES.HIGH_FAT_RATIO;
+      reasons.push('Fat ratio is high');
+    }
+  }
 
-  if (totalCalories === 0) return 0;
+  // 5. Outside food penalty
+  const outsideCount = entries.filter((e) => e.isOutsideFood).length;
+  if (outsideCount > 0) {
+    const penalty = Math.min(
+      outsideCount * PENALTIES.OUTSIDE_FOOD_PER_ITEM,
+      PENALTIES.OUTSIDE_FOOD_MAX
+    );
+    score -= penalty;
+    reasons.push(`${outsideCount} outside food item${outsideCount > 1 ? 's' : ''}`);
+  }
 
-  // Calculate actual macro calorie contributions
-  const proteinCals = totalProtein * CALORIES_PER_GRAM.protein;
-  const carbsCals = totalCarbs * CALORIES_PER_GRAM.carbs;
-  const fatsCals = totalFats * CALORIES_PER_GRAM.fats;
-  const totalMacroCals = proteinCals + carbsCals + fatsCals;
+  // Clamp score between 0 and 100
+  const finalScore = clamp(score, 0, MAX_SCORE);
+  const grade = scoreToGrade(finalScore);
 
-  if (totalMacroCals === 0) return 0;
+  const explanation =
+    reasons.length > 0
+      ? reasons.join('. ') + '.'
+      : 'Great job! Your nutrition is well-balanced.';
 
-  // Calculate actual ratios
-  const actualRatios = {
-    protein: proteinCals / totalMacroCals,
-    carbs: carbsCals / totalMacroCals,
-    fats: fatsCals / totalMacroCals,
+  return {
+    value: finalScore,
+    previousValue: previousScore,
+    explanation,
+    grade,
   };
-
-  // Calculate deviation from ideal (lower is better)
-  const deviation =
-    Math.abs(actualRatios.protein - IDEAL_MACRO_RATIO.protein) +
-    Math.abs(actualRatios.carbs - IDEAL_MACRO_RATIO.carbs) +
-    Math.abs(actualRatios.fats - IDEAL_MACRO_RATIO.fats);
-
-  // Max possible deviation is ~2.0, normalize to 0-100
-  return Math.max(0, 100 - deviation * 100);
 }
 
-/**
- * Score calorie adherence by how close intake is to the daily target.
- * Returns 0–100. Both under- and over-eating are penalized.
- */
-function calculateCalorieAdherenceScore(totalCalories: number): number {
-  const ratio = totalCalories / DAILY_TARGETS.calories;
-  // Ideal ratio is 1.0; penalize deviation in both directions
-  const deviation = Math.abs(1 - ratio);
-  return Math.max(0, 100 - deviation * 100);
-}
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/**
- * Calculate a score component for outside food consumption.
- * More outside food = lower score. Returns 0–100.
- */
-function calculateOutsideFoodPenalty(entries: FoodLogEntry[]): number {
-  if (entries.length === 0) return 100;
-
-  const outsideCount = entries.filter(
-    (e) => e.foodItem.category === 'outside' || e.foodItem.category === 'snack'
-  ).length;
-
-  const outsideRatio = outsideCount / entries.length;
-
-  if (outsideRatio >= OUTSIDE_FOOD_THRESHOLD) {
-    return 0;
-  }
-
-  return Math.round(100 * (1 - outsideRatio / OUTSIDE_FOOD_THRESHOLD));
-}
-
-/** Build a human-readable explanation from the score components */
-function buildExplanation(
-  macroScore: number,
-  calorieScore: number,
-  outsideScore: number,
-  nutrition: NutritionData
-): string {
-  const parts: string[] = [];
-
-  if (macroScore >= 70) {
-    parts.push('Good macro balance');
-  } else if (macroScore >= 40) {
-    parts.push('Macro balance needs improvement');
-  } else {
-    parts.push('Poor macro balance');
-  }
-
-  if (calorieScore >= 70) {
-    parts.push('calorie intake is on target');
-  } else if (nutrition.totalCalories > DAILY_TARGETS.calories) {
-    parts.push('calorie intake is above target');
-  } else {
-    parts.push('calorie intake is below target');
-  }
-
-  if (outsideScore < 50) {
-    parts.push('too much outside/snack food');
-  }
-
-  return parts.join(', ') + '.';
-}
-
-/** Convert a numeric score (0–100) to a letter grade */
+/** Convert a numeric score to a letter grade */
 function scoreToGrade(score: number): ScoreGrade {
-  if (score >= 85) return 'A';
-  if (score >= 70) return 'B';
-  if (score >= 55) return 'C';
-  if (score >= 40) return 'D';
+  if (score >= 81) return 'A';
+  if (score >= 61) return 'B';
+  if (score >= 41) return 'C';
+  if (score >= 21) return 'D';
   return 'F';
 }
 
-// ─── Suggestion Engine ───────────────────────────────────────────────────────
-
-/**
- * Generate a single actionable suggestion based on the current nutrition data.
- * Prioritizes the most impactful deficiency.
- *
- * @param nutrition - Aggregated daily nutrition
- * @param entries - Food log entries for category analysis
- * @returns A single Suggestion with message and priority
- */
-export function generateSuggestion(
-  nutrition: NutritionData,
-  entries: FoodLogEntry[]
-): Suggestion {
-  // No entries → generic prompt
-  if (entries.length === 0) {
-    return {
-      type: 'good_balance',
-      message: 'Start logging your meals to get personalized suggestions!',
-      priority: 'low',
-    };
-  }
-
-  // Rank potential suggestions by priority
-  const candidates = getSuggestionCandidates(nutrition, entries);
-
-  // Return the highest priority suggestion
-  return candidates.length > 0
-    ? candidates[0]
-    : {
-        type: 'good_balance',
-        message: 'Great job! Your nutrition looks well-balanced today. Keep it up! 🎉',
-        priority: 'low',
-      };
-}
-
-/** Evaluate all possible suggestions and return sorted by priority */
-function getSuggestionCandidates(
-  nutrition: NutritionData,
-  entries: FoodLogEntry[]
-): Suggestion[] {
-  const candidates: Suggestion[] = [];
-  const { totalCalories, totalProtein, totalCarbs, totalFats } = nutrition;
-
-  // Check protein deficiency
-  const proteinRatio = totalProtein / Math.max(DAILY_TARGETS.protein, 1);
-  if (proteinRatio < 0.5) {
-    candidates.push(makeSuggestion(
-      'low_protein',
-      `Your protein intake is low (${Math.round(totalProtein)}g / ${DAILY_TARGETS.protein}g target). Try adding eggs, chicken, dal, or paneer.`,
-      'high'
-    ));
-  }
-
-  // Check excessive carbs
-  if (totalCalories > 0) {
-    const carbCalRatio = (totalCarbs * CALORIES_PER_GRAM.carbs) / totalCalories;
-    if (carbCalRatio > 0.65) {
-      candidates.push(makeSuggestion(
-        'high_carbs',
-        `Carbs make up ${Math.round(carbCalRatio * 100)}% of your calories. Balance with more protein and healthy fats.`,
-        'high'
-      ));
-    }
-  }
-
-  // Check excessive fats
-  if (totalCalories > 0) {
-    const fatCalRatio = (totalFats * CALORIES_PER_GRAM.fats) / totalCalories;
-    if (fatCalRatio > 0.40) {
-      candidates.push(makeSuggestion(
-        'high_fats',
-        `Fat intake is high (${Math.round(fatCalRatio * 100)}% of calories). Consider lighter cooking methods or leaner options.`,
-        'medium'
-      ));
-    }
-  }
-
-  // Check calorie excess
-  if (totalCalories > DAILY_TARGETS.calories * 1.2) {
-    candidates.push(makeSuggestion(
-      'high_calories',
-      `You've exceeded your calorie target by ${Math.round(totalCalories - DAILY_TARGETS.calories)} kcal. Consider lighter portions for remaining meals.`,
-      'high'
-    ));
-  }
-
-  // Check very low calorie intake (if they've logged multiple items)
-  if (entries.length >= 3 && totalCalories < DAILY_TARGETS.calories * 0.4) {
-    candidates.push(makeSuggestion(
-      'low_calories',
-      `Your calorie intake seems quite low (${Math.round(totalCalories)} kcal). Make sure you're eating enough for sustained energy.`,
-      'medium'
-    ));
-  }
-
-  // Check outside food proportion
-  const outsideCount = entries.filter(
-    (e) => e.foodItem.category === 'outside'
-  ).length;
-  if (outsideCount >= 2 || (entries.length > 0 && outsideCount / entries.length > 0.4)) {
-    candidates.push(makeSuggestion(
-      'too_much_outside_food',
-      'You have quite a bit of outside food today. Try preparing one meal at home for better nutrition control.',
-      'medium'
-    ));
-  }
-
-  // Check for missing vegetables
-  const hasVegetable = entries.some(
-    (e) => e.foodItem.category === 'vegetable' || e.foodItem.category === 'fruit'
-  );
-  if (!hasVegetable && entries.length >= 2) {
-    candidates.push(makeSuggestion(
-      'missing_vegetables',
-      'No fruits or vegetables logged yet. Add a salad or fruit to improve your micronutrient intake.',
-      'medium'
-    ));
-  }
-
-  // Sort: high > medium > low
-  const priorityOrder = { high: 0, medium: 1, low: 2 };
-  return candidates.sort((a, b) => priorityOrder[a.priority] - priorityOrder[b.priority]);
-}
-
-/** Helper to create a Suggestion object */
-function makeSuggestion(
-  type: SuggestionType,
-  message: string,
-  priority: Suggestion['priority']
-): Suggestion {
-  return { type, message, priority };
+/** Clamp a number between min and max */
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
 }

@@ -1,69 +1,71 @@
 import type { HeatmapDay } from '../types';
-import { getDayLabel, formatDateForDisplay } from '../utils/helpers';
 
 /**
- * Heatmap component displays a 30-day grid of health scores.
- * Each cell is color-coded based on the daily score grade.
+ * Heatmap Component — "Your Habit Journey"
  *
- * Color mapping:
- * - 85+  (A): Green
- * - 70+  (B): Teal
- * - 55+  (C): Yellow
- * - 40+  (D): Orange
- * - <40  (F): Red
- * -  0   (no data): Gray
+ * A 30-day calendar heatmap showing daily health scores.
+ * This is a KEY FEATURE for behavior reinforcement — seeing
+ * colors trend from red → yellow → green provides powerful
+ * visual proof that habits are improving.
+ *
+ * Color mapping (deliberately simple for instant understanding):
+ * - 0–50  → Red (needs improvement)
+ * - 51–80 → Yellow (getting better)
+ * - 81–100 → Green (excellent)
+ * - 0 (no data) → Gray
  */
 
 interface HeatmapProps {
   data: HeatmapDay[];
 }
 
-/** Map score ranges to cell colors */
-function getHeatmapColor(score: number): string {
-  if (score === 0) return '#1e293b';  // slate-800 (no data)
-  if (score >= 85) return '#10b981';   // emerald-500
-  if (score >= 70) return '#22d3ee';   // cyan-400
-  if (score >= 55) return '#facc15';   // yellow-400
-  if (score >= 40) return '#fb923c';   // orange-400
-  return '#ef4444';                     // red-500
+/** Map score to the three-tier color scheme */
+function getColor(score: number): string {
+  if (score === 0) return '#1e293b';    // No data — subtle gray
+  if (score <= 50) return '#ef4444';     // Red
+  if (score <= 80) return '#facc15';     // Yellow
+  return '#10b981';                       // Green
+}
+
+/** Format date string to short display (e.g., "Apr 7") */
+function formatShort(dateStr: string): string {
+  const d = new Date(dateStr + 'T00:00:00');
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+/** Get short weekday label */
+function getDay(dateStr: string): string {
+  const d = new Date(dateStr + 'T00:00:00');
+  return d.toLocaleDateString('en-US', { weekday: 'short' });
 }
 
 export default function Heatmap({ data }: HeatmapProps) {
-  // Split data into weeks (7-day rows) for grid layout
-  const weeks = chunkArray(data, 7);
+  // Split into rows of 7 (weeks)
+  const weeks: HeatmapDay[][] = [];
+  for (let i = 0; i < data.length; i += 7) {
+    weeks.push(data.slice(i, i + 7));
+  }
 
   return (
     <div className="heatmap-container" id="heatmap-section">
-      <h3 className="heatmap-title">30-Day Health Heatmap</h3>
-      <p className="heatmap-subtitle">Your daily health score history</p>
+      <h2 className="heatmap-title">Your Habit Journey</h2>
+      <p className="heatmap-subtitle">30 days of nutrition scores — watch your progress unfold</p>
 
       <div className="heatmap-grid" role="grid" aria-label="30-day health score heatmap">
-        {weeks.map((week, weekIndex) => (
-          <div
-            key={weekIndex}
-            className="heatmap-row"
-            role="row"
-          >
+        {weeks.map((week, wi) => (
+          <div key={wi} className="heatmap-week" role="row">
             {week.map((day) => (
-              <div
-                key={day.date}
-                className="heatmap-cell-wrapper"
-                role="gridcell"
-              >
+              <div key={day.date} className="heatmap-cell-wrap" role="gridcell">
                 <div
                   className="heatmap-cell"
                   style={{
-                    backgroundColor: getHeatmapColor(day.score),
-                    boxShadow: day.score > 0
-                      ? `0 0 6px ${getHeatmapColor(day.score)}44`
-                      : 'none',
+                    backgroundColor: getColor(day.score),
+                    boxShadow: day.score > 0 ? `0 0 8px ${getColor(day.score)}33` : 'none',
                   }}
-                  title={`${formatDateForDisplay(day.date)}: Score ${day.score} (${day.grade})`}
-                  aria-label={`${formatDateForDisplay(day.date)}: Score ${day.score}, Grade ${day.grade}`}
+                  title={`${formatShort(day.date)}: ${day.score > 0 ? `Score ${day.score}` : 'No data'}`}
+                  aria-label={`${formatShort(day.date)}: Score ${day.score}`}
                 />
-                <span className="heatmap-day-label">
-                  {getDayLabel(day.date)}
-                </span>
+                <span className="heatmap-day-text">{getDay(day.date)}</span>
               </div>
             ))}
           </div>
@@ -71,30 +73,15 @@ export default function Heatmap({ data }: HeatmapProps) {
       </div>
 
       {/* Legend */}
-      <div className="heatmap-legend" aria-label="Score color legend">
-        <span className="legend-label">Worse</span>
-        <div className="legend-colors">
-          {['#ef4444', '#fb923c', '#facc15', '#22d3ee', '#10b981'].map(
-            (color) => (
-              <div
-                key={color}
-                className="legend-swatch"
-                style={{ backgroundColor: color }}
-              />
-            )
-          )}
+      <div className="heatmap-legend" aria-label="Color legend">
+        <span className="legend-text">Needs work</span>
+        <div className="legend-swatches">
+          <div className="legend-swatch" style={{ backgroundColor: '#ef4444' }} />
+          <div className="legend-swatch" style={{ backgroundColor: '#facc15' }} />
+          <div className="legend-swatch" style={{ backgroundColor: '#10b981' }} />
         </div>
-        <span className="legend-label">Better</span>
+        <span className="legend-text">Excellent</span>
       </div>
     </div>
   );
-}
-
-/** Split an array into chunks of a given size */
-function chunkArray<T>(arr: T[], size: number): T[][] {
-  const chunks: T[][] = [];
-  for (let i = 0; i < arr.length; i += size) {
-    chunks.push(arr.slice(i, i + size));
-  }
-  return chunks;
 }

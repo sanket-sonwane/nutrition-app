@@ -14,69 +14,103 @@ import {
   aggregateNutrition,
   emptyNutrition,
 } from '../services/nutritionService';
-import {
-  calculateHealthScore,
-  generateSuggestion,
-} from '../services/scoreService';
-import {
-  getFromStorage,
-  saveToStorage,
-  getTodayDateString,
-  generateId,
-  buildHeatmapData,
-} from '../utils/helpers';
+import { calculateHealthScore } from '../services/scoreService';
+import { generateSuggestion } from '../services/suggestionService';
+import { getFromStorage, saveToStorage } from '../utils/localStorage';
+import { generateDummyData } from '../utils/generateDummyData';
 
 /**
- * Return type for the useHealthData hook.
- * Provides all state and actions needed by the UI.
+ * Custom hook: useHealthData
+ *
+ * Central state management for the entire application.
+ * Handles food logging, score computation, and heatmap data.
+ *
+ * All business logic is delegated to pure service functions —
+ * this hook only orchestrates state transitions and persistence.
  */
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/** Get today's date as YYYY-MM-DD */
+function getTodayDate(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/** Generate a unique entry ID */
+function generateId(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+/** Get the last N days as YYYY-MM-DD strings (including today) */
+function getLastNDays(n: number): string[] {
+  const dates: string[] = [];
+  const today = new Date();
+  for (let i = n - 1; i >= 0; i--) {
+    const d = new Date(today);
+    d.setDate(today.getDate() - i);
+    dates.push(
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    );
+  }
+  return dates;
+}
+
+// ─── Hook Return Type ────────────────────────────────────────────────────────
+
 interface UseHealthDataReturn {
   /** Today's food log entries */
   todayEntries: FoodLogEntry[];
   /** Aggregated nutrition for today */
   todayNutrition: NutritionData;
-  /** Today's health score */
+  /** Today's health score (starts at 100, penalties deducted) */
   todayScore: HealthScore;
-  /** Current suggestion based on today's data */
+  /** Current actionable suggestion */
   suggestion: Suggestion;
-  /** Heatmap data for the last 30 days */
+  /** Heatmap data for last 30 days */
   heatmapData: HeatmapDay[];
   /** Today's date string */
   todayDate: string;
-  /** Add a food entry via text input; returns error message or null */
-  addFoodEntry: (input: string) => string | null;
+  /** Add a food entry; returns error string or null on success */
+  addFoodEntry: (input: string, isOutsideFood: boolean) => string | null;
   /** Remove a food entry by ID */
   removeFoodEntry: (entryId: string) => void;
   /** Clear all entries for today */
   clearToday: () => void;
 }
 
-/**
- * Custom hook that manages all nutrition tracking state.
- *
- * Handles:
- * - Loading/saving daily logs from localStorage
- * - Adding/removing food entries
- * - Computing nutrition totals, health score, and suggestions
- * - Building heatmap data from historical logs
- */
+// ─── Hook Implementation ────────────────────────────────────────────────────
+
 export function useHealthData(): UseHealthDataReturn {
-  const todayDate = getTodayDateString();
+  const todayDate = getTodayDate();
 
-  // Load all daily logs from storage
-  const [allLogs, setAllLogs] = useState<Record<string, DailyLog>>(() =>
-    getFromStorage(StorageKey.DAILY_LOGS, {})
-  );
+  /**
+   * Initialize logs from storage.
+   * If no data exists, generate dummy data to demonstrate
+   * the behavior improvement trend in the heatmap.
+   */
+  const [allLogs, setAllLogs] = useState<Record<string, DailyLog>>(() => {
+    const stored = getFromStorage<Record<string, DailyLog>>(StorageKey.DAILY_LOGS, {});
 
-  // Extract today's entries from the stored logs
+    // If storage is empty, seed with dummy data for compelling demo
+    if (Object.keys(stored).length === 0) {
+      const dummyData = generateDummyData();
+      saveToStorage(StorageKey.DAILY_LOGS, dummyData);
+      return dummyData;
+    }
+
+    return stored;
+  });
+
+  // ─── Derived State (memoized) ──────────────────────────────────────
+
   const todayEntries = useMemo(
     () => allLogs[todayDate]?.entries ?? [],
     [allLogs, todayDate]
   );
 
-  // Calculate derived data from today's entries
   const todayNutrition = useMemo(
-    () => (todayEntries.length > 0 ? aggregateNutrition(todayEntries) : emptyNutrition()),
+    () => todayEntries.length > 0 ? aggregateNutrition(todayEntries) : emptyNutrition(),
     [todayEntries]
   );
 
@@ -90,39 +124,47 @@ export function useHealthData(): UseHealthDataReturn {
     [todayNutrition, todayEntries]
   );
 
-  const heatmapData = useMemo(
-    () => buildHeatmapData(allLogs),
-    [allLogs]
-  );
+  const heatmapData = useMemo(() => {
+    const last30 = getLastNDays(30);
+    return last30.map((date) => ({
+      date,
+      score: allLogs[date]?.score?.value ?? 0,
+    }));
+  }, [allLogs]);
 
-  // Persist logs to localStorage whenever they change
+  // ─── Persist to localStorage ────────────────────────────────────────
+
   useEffect(() => {
     saveToStorage(StorageKey.DAILY_LOGS, allLogs);
   }, [allLogs]);
 
-  /**
-   * Update today's log in state with new entries.
-   * Recalculates nutrition and score for the day.
-   */
+  // ─── Actions ────────────────────────────────────────────────────────
+
+  /** Recalculate and update today's log in state */
   const updateTodayLog = useCallback(
     (entries: FoodLogEntry[]) => {
       const nutrition = entries.length > 0 ? aggregateNutrition(entries) : emptyNutrition();
-      const score = calculateHealthScore(nutrition, entries);
+
+      // Capture previous score for delta display
+      const previousScore = allLogs[todayDate]?.score?.value ?? 100;
+      const score = calculateHealthScore(nutrition, entries, previousScore);
 
       setAllLogs((prev) => ({
         ...prev,
         [todayDate]: { date: todayDate, entries, nutrition, score },
       }));
     },
-    [todayDate]
+    [todayDate, allLogs]
   );
 
   /**
-   * Add a food entry from a raw text input string.
-   * @returns Error message string if parsing/lookup fails, null on success
+   * Add a food entry from raw text input.
+   * @param input - User's text (e.g., "2 sandwich")
+   * @param isOutsideFood - Whether the outside food toggle is checked
+   * @returns Error message or null on success
    */
   const addFoodEntry = useCallback(
-    (input: string): string | null => {
+    (input: string, isOutsideFood: boolean): string | null => {
       const parsed = parseFoodInput(input);
       if (!parsed) {
         return 'Invalid input. Try: "2 sandwich" or "apple"';
@@ -130,37 +172,32 @@ export function useHealthData(): UseHealthDataReturn {
 
       const foodItem = lookupFoodItem(parsed.itemName);
       if (!foodItem) {
-        return `"${parsed.itemName}" not found in database. Try a different food item.`;
+        return `"${parsed.itemName}" not found in our database. Try a different item.`;
       }
 
       const newEntry: FoodLogEntry = {
         id: generateId(),
         foodItem,
         quantity: parsed.quantity,
+        isOutsideFood: isOutsideFood || foodItem.category === 'outside',
         timestamp: Date.now(),
       };
 
-      const updatedEntries = [...todayEntries, newEntry];
-      updateTodayLog(updatedEntries);
+      updateTodayLog([...todayEntries, newEntry]);
       return null;
     },
     [todayEntries, updateTodayLog]
   );
 
-  /**
-   * Remove a food entry by its unique ID.
-   */
+  /** Remove a single entry by ID */
   const removeFoodEntry = useCallback(
     (entryId: string) => {
-      const updatedEntries = todayEntries.filter((e) => e.id !== entryId);
-      updateTodayLog(updatedEntries);
+      updateTodayLog(todayEntries.filter((e) => e.id !== entryId));
     },
     [todayEntries, updateTodayLog]
   );
 
-  /**
-   * Clear all entries for today.
-   */
+  /** Clear all of today's entries */
   const clearToday = useCallback(() => {
     updateTodayLog([]);
   }, [updateTodayLog]);
